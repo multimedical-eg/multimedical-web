@@ -257,12 +257,12 @@ async function putProof(id,data){const obj=Object.assign({id},data);
   try{await withTimeout(rawSet('proofs',obj),20000)}catch(e){if(fatal(e)){toast('تعذّر حفظ التوقيع والصور: '+errMsg(e),'err');return}queue('proofs',obj)}}
 async function getProof(id){if(MODE==='local')return LS.get('mm_proofs',{})[id]||null;const o=OUTBOX.find(o=>o.col==='proofs'&&o.obj.id===id);if(o)return o.obj;try{const s=await withTimeout(DB.collection('proofs').doc(id).get());return s.exists?s.data():null}catch(e){return null}}
 function startLocal(){MODE='local';COLS.forEach(c=>S[c]=LS.get('mm_l_'+c,{}));READY=true;render()}
-function startCloud(db){DB=db;MODE='cloud';let got=0;
+function startCloud(db){DB=db;MODE='cloud';const got=new Set();
   const timer=setTimeout(()=>{SYNC.err='تعذّر الوصول للبيانات حالياً — المعروض قد لا يكون محدّثاً';READY=true;render()},10000);
   COLS.forEach(c=>{let q=db.collection(c);if(c==='audit'||c==='notifs')q=q.orderBy('at','desc').limit(500);if(c==='trips'||c==='deliveries')q=q.where('date','>=',addDays(today(),-(+SET().historyDays||180)));
     q.onSnapshot(snap=>{try{pushWatch(c,snap)}catch(e){}const m={};snap.docs.forEach(d=>{if(d.exists)m[d.id]=Object.assign({},d.data(),{id:d.id})});
       OUTBOX.filter(o=>o.col===c).forEach(o=>m[o.obj.id]=o.obj);S[c]=m;
-      if(!snap.metadata.fromCache){SYNC.last=Date.now();got++;if(got>=COLS.length){clearTimeout(timer);SYNC.err=''}}
+      if(!snap.metadata.fromCache){SYNC.last=Date.now();got.add(c);if(got.size>=COLS.length){clearTimeout(timer);if(/تعذّر الوصول/.test(SYNC.err))SYNC.err=''}}
       if(!READY){READY=true}schedRender()},
     e=>{clearTimeout(timer);READY=true;SYNC.err=e&&e.code==='revoked'?'تم سحب صلاحية الوصول':'انقطعت المزامنة ('+(e&&e.code||'')+') — أعد فتح الصفحة';schedRender()})});
   flushOutbox()}
@@ -1057,7 +1057,7 @@ function fsAdapter(fdb){
   const wrapRef=r=>({id:r.id,path:r.path,get:()=>mapErr(r.get().then(wrapSnap)),set:d=>mapErr(r.set(d)),update:d=>mapErr(r.update(flatPaths(d))),delete:()=>mapErr(r.delete()),
     onSnapshot:(n,e)=>r.onSnapshot(s=>n(wrapSnap(s)),er=>e&&e({code:FSERR[er.code]||'unavailable',message:er.message}))});
   const wrapQ=q=>({where:(...a)=>wrapQ(q.where(...a)),orderBy:(...a)=>wrapQ(q.orderBy(...a)),limit:n=>wrapQ(q.limit(n)),get:()=>mapErr(q.get()),
-    onSnapshot:(n,e)=>q.onSnapshot(n,er=>e&&e({code:er.code==='permission-denied'?'revoked':(FSERR[er.code]||'unavailable'),message:er.message}))});
+    onSnapshot:(n,e)=>q.onSnapshot({includeMetadataChanges:true},n,er=>e&&e({code:er.code==='permission-denied'?'revoked':(FSERR[er.code]||'unavailable'),message:er.message}))});
   return{collection:c=>{const cr=fdb.collection(c);const w=wrapQ(cr);w.doc=id=>wrapRef(id?cr.doc(id):cr.doc());return w},doc:p=>wrapRef(fdb.doc(p))}}
 let FDB=null,DEVICE=null,GATE='loading',DEVS=null;
 async function bootApp(){render();
