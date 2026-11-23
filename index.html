@@ -260,9 +260,9 @@ function startLocal(){MODE='local';COLS.forEach(c=>S[c]=LS.get('mm_l_'+c,{}));RE
 function startCloud(db){DB=db;MODE='cloud';let got=0;
   const timer=setTimeout(()=>{SYNC.err='تعذّر الوصول للبيانات حالياً — المعروض قد لا يكون محدّثاً';READY=true;render()},10000);
   COLS.forEach(c=>{let q=db.collection(c);if(c==='audit'||c==='notifs')q=q.orderBy('at','desc').limit(500);if(c==='trips'||c==='deliveries')q=q.where('date','>=',addDays(today(),-(+SET().historyDays||180)));
-    q.onSnapshot(snap=>{const m={};snap.docs.forEach(d=>{if(d.exists)m[d.id]=Object.assign({},d.data(),{id:d.id})});
+    q.onSnapshot(snap=>{try{pushWatch(c,snap)}catch(e){}const m={};snap.docs.forEach(d=>{if(d.exists)m[d.id]=Object.assign({},d.data(),{id:d.id})});
       OUTBOX.filter(o=>o.col===c).forEach(o=>m[o.obj.id]=o.obj);S[c]=m;
-      if(!snap.metadata.fromCache){got++;if(got>=COLS.length){clearTimeout(timer);SYNC.err=''}}
+      if(!snap.metadata.fromCache){SYNC.last=Date.now();got++;if(got>=COLS.length){clearTimeout(timer);SYNC.err=''}}
       if(!READY){READY=true}schedRender()},
     e=>{clearTimeout(timer);READY=true;SYNC.err=e&&e.code==='revoked'?'تم سحب صلاحية الوصول':'انقطعت المزامنة ('+(e&&e.code||'')+') — أعد فتح الصفحة';schedRender()})});
   flushOutbox()}
@@ -343,7 +343,7 @@ const NAVICON={dash:'dash',trips:'trips',deliveries:'deliveries',wa:'wa',items:'
 let SIDE=false;
 function syncBadge(){if(MODE==='local')return `<span class="sync loc" title="البيانات محفوظة على هذا الجهاز فقط">على هذا الجهاز فقط</span>`;
   if(!SYNC.online||OUTBOX.length)return `<span class="sync off">${SYNC.online?'جاري المزامنة':'بدون إنترنت'}${OUTBOX.length?' — '+N(OUTBOX.length)+' بانتظار الرفع':''}</span>`;
-  return `<span class="sync">متزامن</span>`}
+  return `<span class="sync" style="cursor:pointer" title="اضغط لتحديث البيانات" onclick="resync()">متزامن${SYNC.last?' • '+new Date(SYNC.last).toLocaleTimeString('ar-EG-u-nu-latn',{hour:'numeric',minute:'2-digit'}):''} ⟳</span>`}
 const LOGO=`<svg width="24" height="24" viewBox="0 0 24 24"><path fill="#0F4C43" d="M10 3h4v7h7v4h-7v7h-4v-7H3v-4h7z"/><circle cx="19" cy="5" r="2.6" fill="#B8790F"/></svg>`;
 function render(){const ae=document.activeElement,fid=ae&&ae.id&&$('#app').contains(ae)?ae.id:null,fsel=fid&&ae.selectionStart!=null?[ae.selectionStart,ae.selectionEnd]:null;_render();if(fid){const el=document.getElementById(fid);if(el&&el!==document.activeElement){el.focus();try{if(fsel)el.setSelectionRange(fsel[0],fsel[1])}catch(e){}if(fid==='gsq')gsearch(el.value)}}}
 function _render(){const app=$('#app');
@@ -1067,7 +1067,7 @@ async function bootApp(){render();
     let u=await new Promise(res=>{const un=auth.onAuthStateChanged(x=>{un();res(x)})});if(!u)u=(await auth.signInAnonymously()).user;
     DEVICE={uid:u.uid};FDB.collection('devices').doc(u.uid).onSnapshot(s=>{const d=s.exists?s.data():null;DEVICE=Object.assign({uid:u.uid},d||{});
       if(!d){GATE='register';READY=true;render();return}if(!d.approved){GATE='pending';READY=true;render();return}
-      if(GATE!=='ok'){GATE='ok';startCloud(fsAdapter(FDB))}else render()},e=>{GATE='pending';READY=true;render()});
+      if(GATE!=='ok'){GATE='ok';startCloud(fsAdapter(FDB));setTimeout(pushPerm,3000)}else render()},e=>{GATE='pending';READY=true;render()});
   }catch(e){GATE='error';SYNC.err=String(e&&e.message||e);READY=true;render()}}
 function vGate(){const box=(h)=>`<div class="lmain" style="min-height:100vh"><div class="lbox" style="text-align:center"><div class="mark" style="margin:0 auto 12px;border:1px solid var(--line)">${LOGO}</div>${h}</div></div>`;
   if(GATE==='noconfig')return box(`<h2>التطبيق محتاج إعداد</h2><p class="mut">لم يتم ربط التطبيق بقاعدة البيانات بعد (ملف config.js). راجع دليل الإعداد.</p>`);
@@ -1091,11 +1091,40 @@ async function saveFile(fn,data){try{const blob=data instanceof Blob?data:new Bl
 /* الروابط الخارجية (واتساب، الخرائط، الاتصال) تفتح في تطبيقاتها */
 document.addEventListener('click',e=>{if(!isNative())return;const a=e.target.closest&&e.target.closest('a[href]');if(!a)return;const h=a.getAttribute('href');if(!/^(https?:|tel:|mailto:|geo:|whatsapp:)/i.test(h))return;e.preventDefault();
   const AL=plug('AppLauncher');if(AL)AL.openUrl({url:h}).catch(()=>{location.href=h});else location.href=h},true);
+/* إشعارات الموبايل والكمبيوتر */
+const PW={init:{},seen:{}};
+const pwSig=x=>JSON.stringify([x.status,(x.stops||[]).length,Object.values(x.stopState||{}).filter(v=>v&&v.status==='failed').length]);
+function pwOn(){return LS.get('mm_push',true)}
+async function pushPerm(){try{const LN=plug('LocalNotifications');if(isNative()&&LN){const r=await LN.checkPermissions();if(r.display!=='granted')await LN.requestPermissions();try{await LN.createChannel({id:'mm',name:'إشعارات الحركة',importance:5,visibility:1,vibration:true})}catch(e){}return}
+  if(window.Notification&&Notification.permission==='default')await Notification.requestPermission()}catch(e){}}
+let PWN=1;
+async function pushShow(title,body,tid){if(!pwOn())return;toast(title+' — '+body);try{const LN=plug('LocalNotifications');
+  if(isNative()&&LN){await LN.schedule({notifications:[{id:(PWN++%2e9)|0,title,body,channelId:'mm',extra:{tid:tid||''}}]});return}
+  if(window.Notification&&Notification.permission==='granted'){const n=new Notification(title,{body,tag:tid||undefined});n.onclick=()=>{window.focus();if(tid)openPush(tid)}}}catch(e){}}
+function openPush(tid){if(!S.trips||!S.trips[tid])return;if(ME&&ME.role==='driver'){DTRIP=tid;DTAB='trip';render()}else openTrip(tid)}
+function pushWatch(c,snap){if(!['trips','deliveries'].includes(c))return;
+  if(!PW.init[c]){if(!snap.metadata.fromCache)PW.init[c]=true;snap.docs.forEach(d=>{const x=d.data()||{};PW.seen[c+d.id]=pwSig(x);Object.entries(x.stopState||{}).forEach(([k,v])=>{if(v&&v.status==='failed')PW.seen['f'+k]=1})});return}
+  const drvMe=ME&&ME.role==='driver',office=ME&&!drvMe;
+  snap.docChanges().forEach(ch=>{const d=ch.doc,x=d.data()||{};if(ch.type==='removed')return;
+    const key=c+d.id,prev=PW.seen[key];const cur=pwSig(x);PW.seen[key]=cur;if(prev===cur||d.metadata.hasPendingWrites||!ME)return;
+    const pst=prev?JSON.parse(prev)[0]:null;
+    if(c==='trips'){const dn=drv(x.driverId).name||'السائق';
+      if(drvMe&&x.driverId===ME.driverId){if(!prev&&x.status!=='cancelled')pushShow('🚚 رحلة جديدة عليك',`رحلة ${x.no||''} — ${x.date||''} — ${(x.stops||[]).length} محطة`,d.id);
+        else if(prev&&pst===x.status&&JSON.parse(prev)[1]!==(x.stops||[]).length)pushShow('✏️ تعديل على رحلتك',`رحلة ${x.no||''} اتعدلت من الإدارة`,d.id);
+        else if(x.status==='approved')pushShow('✅ رحلتك اتعتمدت',`رحلة ${x.no||''}`,d.id);
+        else if(x.status==='cancelled')pushShow('⛔ رحلة اتلغت',`رحلة ${x.no||''}`,d.id)}
+      if(office&&prev&&pst!==x.status){if(x.status==='out')pushShow('🚀 بدأت رحلة',`${dn} — رحلة ${x.no||''}`,d.id);
+        else if(x.status==='done')pushShow('🏁 رحلة رجعت — بانتظار الاعتماد',`${dn} — رحلة ${x.no||''}${x.km!=null?' — '+x.km+' كم':''}`,d.id)}
+      if(office&&prev&&pst===x.status&&x.status==='out'){const st=x.stopState||{};const f=Object.entries(st).filter(([k,v])=>v&&v.status==='failed'&&!PW.seen['f'+k]);f.forEach(([k,v])=>{PW.seen['f'+k]=1;const sp=(x.stops||[]).find(s=>s.id===k);pushShow('⚠️ تعذّر تسليم',`${dn} — ${sp?farm(sp.farmId).name:''}: ${v.failReason||''}`,d.id)})}}
+    if(c==='deliveries'&&office&&!prev)pushShow('📦 تم التسليم',`${farm(x.farmId).name||''} — ${x.invNo||''}`,x.tripId)})}
+function resync(){toast('جاري تحديث البيانات…');try{FDB&&FDB.disableNetwork().then(()=>FDB.enableNetwork()).then(()=>{SYNC.last=Date.now();toast('تم التحديث');render()})}catch(e){location.reload()}}
+function hookResume(){const A=plug('App');const onRes=()=>{try{FDB&&FDB.enableNetwork()}catch(e){}SYNC.online=navigator.onLine;schedRender()};if(A)A.addListener('resume',onRes);document.addEventListener('visibilitychange',()=>{if(!document.hidden)onRes()});
+  const LN=plug('LocalNotifications');if(LN)LN.addListener('localNotificationActionPerformed',a=>{const t=a&&a.notification&&a.notification.extra&&a.notification.extra.tid;if(t)setTimeout(()=>openPush(t),400)})}
 /* زرار الرجوع في أندرويد */
 function hookBack(){const A=plug('App');if(!A)return;A.addListener('backButton',()=>{if(!$('#modal').classList.contains('hidden'))return closeModal();if(SIDE){SIDE=false;return render()}
   if(ME&&ME.role==='driver'){if(DTRIP){DTRIP=null;DTAB='trip';return render()}}else if(ME&&VIEW!=='dash'){return go(VIEW==='trip'?'trips':'dash')}A.minimizeApp()})}
 
-(async()=>{try{await loadFirebase()}catch(e){}hookBack();bootApp()})();
+(async()=>{try{await loadFirebase()}catch(e){}hookBack();hookResume();bootApp()})();
 </script>
 </body>
 </html>
