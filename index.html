@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#0F4C43">
-<title>مالتي ميديكال — إدارة الحركة والتوزيع</title>
+<title>مالتي ميديكا — إدارة الحركة والتوزيع</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
@@ -271,7 +271,7 @@ window.addEventListener('offline',()=>{SYNC.online=false;schedRender()});
 setInterval(()=>{flushOutbox();if(READY&&VIEW==='dash')schedRender()},45000);
 
 /* ================= الإعدادات والصلاحيات ================= */
-const DEF_SET={company:'شركة مالتي ميديكال للمستحضرات البيطرية',companyEn:'Multi Medical Veterinary Products',phone:'',address:'',taxNo:'',adminWa:'',
+const DEF_SET={company:'شركة مالتي ميديكا للمستحضرات البيطرية',companyEn:'Multimedica Veterinary Products',phone:'',address:'',taxNo:'',adminWa:'',
   pins:{admin:'1234',manager:'2222',warehouse:'3333',accountant:'4444'},depotLat:'',depotLng:'',roadFactor:1.3,kmTolerance:25,oilAlertKm:500,docAlertDays:30,odoGapKm:5,odoPhotoReq:false,showPrices:false,expiryDays:90,tempMin:2,tempMax:8,routeKm:1.5,lateMin:15,vat:0,workFrom:7,workTo:19,invPrefix:'MM'};
 const SET=()=>{const s=S.settings.main||{};return Object.assign({},DEF_SET,s,{pins:Object.assign({},DEF_SET.pins,s.pins||{})})};
 const PR=()=>SET().showPrices===true;const DOCN=()=>PR()?'الفاتورة':'إذن التسليم';const unitsOf=d=>(d.lines||[]).reduce((a,l)=>a+(+l.qty||0),0);
@@ -357,7 +357,7 @@ function _render(){const app=$('#app');
   if(!ok.includes(VIEW)&&VIEW!=='trip')VIEW=ok[0];
   const V={wa:vWA,dash:vDash,trips:vTrips,trip:vTrip,items:vItems,fleet:vFleet,farms:vFarms,deliveries:vDeliveries,reports:vReports,alerts:vAlerts,audit:vAudit,settings:vSettings}[VIEW];
   const cur=VIEW==='trip'?'trips':VIEW;
-  app.innerHTML=`<div class="shell">${SIDE?'<div class="scrim" onclick="SIDE=false;render()"></div>':''}<aside class="side ${SIDE?'open':''}"><div class="brandbox"><div class="mark">${LOGO}</div><div><b>مالتي ميديكال</b><small>إدارة الحركة والتوزيع</small></div></div>
+  app.innerHTML=`<div class="shell">${SIDE?'<div class="scrim" onclick="SIDE=false;render()"></div>':''}<aside class="side ${SIDE?'open':''}"><div class="brandbox"><div class="mark">${LOGO}</div><div><b>مالتي ميديكا</b><small>إدارة الحركة والتوزيع</small></div></div>
   <nav class="nav">${NAV.map(g=>{const its=g[1].filter(t=>can(t[2]));return its.length?`<div class="grp">${g[0]}</div>`+its.map(t=>`<button class="${cur===t[0]?'on':''}" onclick="SIDE=false;go('${t[0]}')">${I(NAVICON[t[0]])}<span>${t[1]}</span>${t[0]==='alerts'&&A?`<span class="cnt r">${N(A)}</span>`:''}${t[0]==='wa'&&PN?`<span class="cnt">${N(PN)}</span>`:''}</button>`).join(''):''}).join('')}</nav>
   <div class="me"><div class="avatar">${esc((ROLES[ME.role]||'?').slice(0,1))}</div><div>${esc(ROLES[ME.role])}<small>${esc(SET().companyEn)}</small></div><button title="تسجيل الخروج" onclick="logout()">${I('logout')}</button></div></aside>
   <div class="mainc"><header class="topbar"><button class="iconbtn menu-btn" onclick="SIDE=true;render()" aria-label="القائمة">${I('menu')}</button><span class="date">${new Date().toLocaleDateString('ar-EG-u-nu-latn',{weekday:'long',day:'numeric',month:'long',year:'numeric'})}</span><div class="gs"><input id="gsq" value="${esc(GSQ)}" placeholder="ابحث عن رحلة، عميل، صنف، رقم إذن…" oninput="gsearch(this.value)" onfocus="gsearch(this.value)" onblur="setTimeout(()=>$('#gsr')?.classList.add('hidden'),150)"><div id="gsr" class="gsr hidden"></div></div><span class="sp"></span>${syncBadge()}
