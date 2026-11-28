@@ -223,7 +223,7 @@ function haversine(a,b){const R=6371,r=x=>x*Math.PI/180;const dl=r(b.lat-a.lat),
 function parseCoords(s){s=String(s||'');let m=s.match(/@(-?\d+\.\d+),\s*(-?\d+\.\d+)/)||s.match(/[?&](?:q|ll|query)=(-?\d+\.\d+),\s*(-?\d+\.\d+)/)||s.match(/(-?\d{1,2}\.\d{3,})\s*,\s*(-?\d{1,3}\.\d{3,})/);return m?{lat:+m[1],lng:+m[2]}:null}
 const mapURL=(lat,lng)=>`https://www.google.com/maps?q=${lat},${lng}`;
 function farmMap(f){if(f.lat&&f.lng)return mapURL(f.lat,f.lng);if(f.mapUrl)return f.mapUrl;if(f.address)return 'https://www.google.com/maps/search/?api=1&query='+encodeURIComponent(f.address);return ''}
-let loadScript=function(u){return new Promise((res,rej)=>{if(document.querySelector(`script[src="${u}"]`))return res();const s=document.createElement('script');s.src=u;s.onload=res;s.onerror=()=>rej(new Error('load'));document.head.appendChild(s)})}
+const LOADED={};let loadScript=function(u){if(LOADED[u])return LOADED[u];LOADED[u]=new Promise((res,rej)=>{const s=document.createElement('script');s.src=u;s.onload=()=>res();s.onerror=()=>{s.remove();delete LOADED[u];rej(new Error('load'))};document.head.appendChild(s)});return LOADED[u]}
 const LIBCDN={'vendor/xlsx.full.min.js':'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js','vendor/html2canvas.min.js':'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js','vendor/jspdf.umd.min.js':'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js'};
 const LIB={xlsx:'vendor/xlsx.full.min.js',h2c:'vendor/html2canvas.min.js',jspdf:'vendor/jspdf.umd.min.js'};
 const _ls=loadScript;loadScript=u=>_ls(u).catch(()=>{const f=LIBCDN[u];if(f)return _ls(f);throw new Error('load')});
@@ -240,8 +240,10 @@ const clean=o=>JSON.parse(JSON.stringify(o));
 const chains={};
 function withTimeout(p,ms){return Promise.race([p,new Promise((_,rej)=>setTimeout(()=>rej({code:'timeout'}),ms||12000))])}
 function chainW(key,fn){const p=(chains[key]||Promise.resolve()).catch(()=>{}).then(fn);chains[key]=p;return p}
-function rawSet(col,obj){return chainW(col+'/'+obj.id,()=>DB.collection(col).doc(obj.id).set(clean(obj)))}
-function queue(col,obj){OUTBOX=OUTBOX.filter(o=>!(o.col===col&&o.obj.id===obj.id));OUTBOX.push({col,obj:clean(obj)});if(!LS.set('mm_outbox',OUTBOX))toast('مساحة الجهاز ممتلئة — احتفظ بالتطبيق مفتوحاً حتى تعود الشبكة','err');schedRender()}
+function rawSet(col,obj,merge){return chainW(col+'/'+obj.id,()=>DB.collection(col).doc(obj.id).set(clean(obj),merge?{merge:true}:undefined))}
+function queue(col,obj,merge){const prev=OUTBOX.find(o=>o.col===col&&o.obj.id===obj.id);let ent;
+  if(merge&&prev){ent={col,merge:prev.merge,obj:deepMerge(clean(prev.obj),clean(obj))}}else ent={col,merge:!!merge,obj:clean(obj)};
+  OUTBOX=OUTBOX.filter(o=>o!==prev);OUTBOX.push(ent);if(!LS.set('mm_outbox',OUTBOX))toast('مساحة الجهاز ممتلئة — احتفظ بالتطبيق مفتوحاً حتى تعود الشبكة','err');schedRender()}
 function fatal(e){return e&&(e.code==='invalid_argument'||e.code==='quota_exceeded'||e.code==='revoked')}
 function errMsg(e){return e.code==='quota_exceeded'?'امتلأت مساحة قاعدة البيانات':e.code==='revoked'?'تم سحب صلاحية الوصول':'الجهاز غير معتمد أو مفيش صلاحية — راجع مسؤول الحركة'}
 async function put(col,obj){obj.updatedAt=nowISO();S[col][obj.id]=obj;schedRender();
@@ -250,8 +252,8 @@ async function put(col,obj){obj.updatedAt=nowISO();S[col][obj.id]=obj;schedRende
 function deepMerge(t,s){for(const k in s){if(s[k]&&typeof s[k]==='object'&&!Array.isArray(s[k])){if(!t[k]||typeof t[k]!=='object'||Array.isArray(t[k]))t[k]={};deepMerge(t[k],s[k])}else t[k]=s[k]}return t}
 async function patch(col,id,partial){const cur=S[col][id];if(!cur)return false;partial.updatedAt=nowISO();deepMerge(cur,clean(partial));schedRender();
   if(MODE==='local'){LS.set('mm_l_'+col,S[col]);return true}
-  try{await withTimeout(chainW(col+'/'+id,()=>DB.collection(col).doc(id).update(clean(partial))));return true}catch(e){if(fatal(e)&&e.code!=='invalid_argument'){toast('تعذّر الحفظ: '+errMsg(e),'err');return false}if(e.code==='invalid_argument'){toast('تعذّر الحفظ: '+errMsg(e),'err');return false}queue(col,cur);return true}}
-async function flushOutbox(){if(MODE!=='cloud'||!OUTBOX.length)return;for(const o of OUTBOX.slice()){try{await withTimeout(rawSet(o.col,o.obj));OUTBOX=OUTBOX.filter(x=>x!==o)}catch(e){if(fatal(e))OUTBOX=OUTBOX.filter(x=>x!==o);else break}}LS.set('mm_outbox',OUTBOX);schedRender()}
+  try{await withTimeout(chainW(col+'/'+id,()=>DB.collection(col).doc(id).update(clean(partial))));return true}catch(e){if(fatal(e)&&e.code!=='invalid_argument'){toast('تعذّر الحفظ: '+errMsg(e),'err');return false}if(e.code==='invalid_argument'){toast('تعذّر الحفظ: '+errMsg(e),'err');return false}queue(col,Object.assign(clean(partial),{id}),true);return true}}
+async function flushOutbox(){if(MODE!=='cloud'||!OUTBOX.length)return;for(const o of OUTBOX.slice()){try{await withTimeout(rawSet(o.col,o.obj,o.merge));OUTBOX=OUTBOX.filter(x=>x!==o)}catch(e){if(fatal(e))OUTBOX=OUTBOX.filter(x=>x!==o);else break}}LS.set('mm_outbox',OUTBOX);schedRender()}
 async function putProof(id,data){const obj=Object.assign({id},data);
   if(MODE==='local'){const m=LS.get('mm_proofs',{});m[id]=obj;if(!LS.set('mm_proofs',m))toast('مساحة الجهاز ممتلئة — قد لا تُحفظ الصور','err');return}
   try{await withTimeout(rawSet('proofs',obj),20000)}catch(e){if(fatal(e)){toast('تعذّر حفظ التوقيع والصور: '+errMsg(e),'err');return}queue('proofs',obj)}}
@@ -261,7 +263,7 @@ function startCloud(db){DB=db;MODE='cloud';const got=new Set();
   const timer=setTimeout(()=>{SYNC.err='تعذّر الوصول للبيانات حالياً — المعروض قد لا يكون محدّثاً';READY=true;render()},10000);
   COLS.forEach(c=>{let q=db.collection(c);if(c==='audit'||c==='notifs')q=q.orderBy('at','desc').limit(500);if(c==='trips'||c==='deliveries')q=q.where('date','>=',addDays(today(),-(+SET().historyDays||180)));
     q.onSnapshot(snap=>{try{pushWatch(c,snap)}catch(e){}const m={};snap.docs.forEach(d=>{if(d.exists)m[d.id]=Object.assign({},d.data(),{id:d.id})});
-      OUTBOX.filter(o=>o.col===c).forEach(o=>m[o.obj.id]=o.obj);S[c]=m;
+      OUTBOX.filter(o=>o.col===c).forEach(o=>{m[o.obj.id]=o.merge&&m[o.obj.id]?deepMerge(m[o.obj.id],clean(o.obj)):o.obj});S[c]=m;
       if(!snap.metadata.fromCache){SYNC.last=Date.now();got.add(c);if(got.size>=COLS.length){clearTimeout(timer);if(/تعذّر الوصول/.test(SYNC.err))SYNC.err=''}}
       if(!READY){READY=true}schedRender()},
     e=>{clearTimeout(timer);READY=true;SYNC.err=e&&e.code==='revoked'?'تم سحب صلاحية الوصول':'انقطعت المزامنة ('+(e&&e.code||'')+') — أعد فتح الصفحة';schedRender()})});
@@ -689,7 +691,7 @@ function vSettings(){const s=SET();return `<div class="ph"><div><h2>الإعدا
 async function saveSettings(e){e.preventDefault();const fd=new FormData($('#sf'));const s=SET();const o={};['company','companyEn','phone','address','taxNo','adminWa'].forEach(k=>o[k]=fd.get(k).trim());['vat','expiryDays','tempMin','tempMax','routeKm','lateMin','workFrom','workTo','roadFactor','kmTolerance','oilAlertKm','docAlertDays','odoGapKm'].forEach(k=>o[k]=+fd.get(k));o.depotLat=fd.get('depotLat').trim()===''?'':+fd.get('depotLat');o.depotLng=fd.get('depotLng').trim()===''?'':+fd.get('depotLng');o.odoPhotoReq=fd.get('odoPhotoReq')==='on';o.showPrices=fd.get('showPrices')==='on';
   o.pins={};for(const r of ['admin','manager','warehouse','accountant']){const p=fd.get('pin_'+r).trim();if(p.length<4)return toast('الرقم السري 4 أرقام على الأقل','err');o.pins[r]=p}
   await put('settings',Object.assign({invPrefix:s.invPrefix},S.settings.main||{},o,{id:'main'}));audit('تعديل الإعدادات','settings','main','');toast('تم الحفظ')}
-async function depotHere(){toast('جاري تحديد الموقع…');const l=await getLoc();if(l){$('#dLat').value=l.lat;$('#dLng').value=l.lng;toast('تم — اضغط حفظ الإعدادات')}else toast('الجهاز لم يسمح بالـ GPS — الصق رابط الموقع من خرائط جوجل','err')}
+async function depotHere(){toast('جاري تحديد الموقع…');const l=await getLoc();if(!$('#dLat'))return;if(l){$('#dLat').value=l.lat;$('#dLng').value=l.lng;toast('تم — اضغط حفظ الإعدادات')}else toast('الجهاز لم يسمح بالـ GPS — الصق رابط الموقع من خرائط جوجل','err')}
 async function importBackup(inp){const f=inp.files[0];inp.value='';if(!f)return;let o;try{o=JSON.parse(await f.text())}catch(e){return toast('الملف مش نسخة احتياطية صحيحة','err')}
   const cols=COLS.filter(c=>o[c]&&typeof o[c]==='object');const n=cols.reduce((a,c)=>a+Object.keys(o[c]).length,0);if(!n)return toast('الملف فاضي','err');
   confirmBox(`استيراد <b>${N(n)}</b> سجل (${cols.map(c=>c+': '+Object.keys(o[c]).length).join('، ')})؟ السجلات اللي ليها نفس الرقم هتتحدّث.`,async()=>{let i=0;for(const c of cols){for(const d of Object.values(o[c])){if(!d||!d.id)continue;await put(c,d);i++;if(i%25===0)toast(`تم ${N(i)} من ${N(n)}…`)}}audit('استيراد نسخة احتياطية','system','',`${n} سجل`);toast(`✅ تم استيراد ${N(i)} سجل`)},'استيراد')}
@@ -799,7 +801,7 @@ function kmCard(t){const pk=plannedKm(t),km=tripKm(t),g=gpsKm(t),tol=+SET().kmTo
 async function showPhoto(id){const p=await getProof(id);if(!p||!p.photo)return toast('الصورة غير متاحة بعد (قد تكون في انتظار الرفع)','err');modal(`<h3>📷 الصورة</h3><img src="${p.photo}" style="width:100%;border-radius:10px"><div class="actions"><button class="btn" onclick="closeModal()">إغلاق</button></div>`)}
 let FRM={};
 async function framePhoto(inp,key,th){const f=inp.files[0];inp.value='';if(!f)return;const d=await compress(f,900,.6);if(!d)return toast('تعذّرت قراءة الصورة','err');FRM[key]=d;$('#'+th).innerHTML=`<img src="${d}">`}
-async function frameLoc(key,el){$('#'+el).textContent='⏳ جاري تحديد الموقع…';const l=await getLoc();if(l){FRM[key]=Object.assign(l,{at:nowISO()});$('#'+el).innerHTML=`✅ <a href="${mapURL(l.lat,l.lng)}" target="_blank" rel="noopener">${l.lat}, ${l.lng}</a> (دقة ${N(l.acc)} م)`}else{$('#'+el).innerHTML='⚠️ الجهاز لم يسمح بالـ GPS — الصق رابط الموقع من خرائط جوجل في الخانة';$('#'+el+'M').classList.remove('hidden')}}
+async function frameLoc(key,el){const e0=$('#'+el);if(!e0)return;e0.textContent='⏳ جاري تحديد الموقع…';const l=await getLoc();if(!$('#'+el))return;if(l){FRM[key]=Object.assign(l,{at:nowISO()});$('#'+el).innerHTML=`✅ <a href="${mapURL(l.lat,l.lng)}" target="_blank" rel="noopener">${l.lat}, ${l.lng}</a> (دقة ${N(l.acc)} م)`}else{$('#'+el).innerHTML='⚠️ الجهاز لم يسمح بالـ GPS — الصق رابط الموقع من خرائط جوجل في الخانة';$('#'+el+'M').classList.remove('hidden')}}
 const locField=(key,el,label)=>`<div class="full"><div class="row"><button type="button" class="btn" onclick="frameLoc('${key}','${el}')">📍 ${label}</button><span id="${el}" class="sm mut"></span></div><input id="${el}M" class="hidden" style="margin-top:6px" placeholder="الصق رابط خرائط جوجل أو الإحداثيات (مثال: 30.0444, 31.2357)"></div>`;
 const readLoc=(key,el)=>FRM[key]||(()=>{const v=$('#'+el+'M')?.value;const c=v&&parseCoords(v);return c?Object.assign(c,{manual:true,at:nowISO()}):null})();
 function startTripForm(tid){const t=S.trips[tid];if(lockedMsg(t))return;if(!(t.lines||[]).length)return toast('حمّل البضاعة أولاً','err');if(!(t.stops||[]).length)return toast('أضف محطات خط السير أولاً','err');
@@ -873,7 +875,7 @@ function liveCard(){const ts=L('trips').filter(t=>t.status==='out');if(!ts.lengt
 /* ================= الخريطة المباشرة للعربيات ================= */
 const LEAF={js:'vendor/leaflet/leaflet.js',css:'vendor/leaflet/leaflet.css',cdnJs:'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js',cdnCss:'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css'};
 let LMAP=null,LDIV=null,LLAYER=null,LFIT=false,LFOCUS=null;
-function loadCSS(u){return new Promise((res,rej)=>{if(document.querySelector(`link[href="${u}"]`))return res();const l=document.createElement('link');l.rel='stylesheet';l.href=u;l.onload=res;l.onerror=()=>rej(new Error('css'));document.head.appendChild(l)})}
+function loadCSS(u){return new Promise((res,rej)=>{if(document.querySelector(`link[data-ok][href="${u}"]`))return res();const l=document.createElement('link');l.rel='stylesheet';l.href=u;l.onload=()=>{l.dataset.ok=1;res()};l.onerror=()=>{l.remove();rej(new Error('css'))};document.head.appendChild(l)})}
 async function loadLeaflet(){if(window.L&&window.L.map)return;try{await loadCSS(LEAF.css)}catch(e){await loadCSS(LEAF.cdnCss)}try{await _ls(LEAF.js)}catch(e){await _ls(LEAF.cdnJs)}}
 const agoMin=at=>at?Math.max(0,Math.round((Date.now()-new Date(at).getTime())/60000)):null;
 const agoTxt=m=>m==null?'—':m<1?'الآن':m<60?`منذ ${N(m)} د`:`منذ ${N(Math.floor(m/60))} س ${N(m%60)} د`;
@@ -891,8 +893,8 @@ function vMap(){const ts=outTrips();
 function mapFocus(tid){LFOCUS=tid;const t=S.trips[tid];const l=t&&(t.track&&t.track.last||t.startLoc);if(LMAP&&l)LMAP.setView([l.lat,l.lng],13);render()}
 function vehIcon(col,label){return window.L.divIcon({className:'',iconSize:[34,34],iconAnchor:[17,17],html:`<div class="vmk" style="background:${col}">🚚</div>${label?`<div class="vlb">${esc(label)}</div>`:''}`})}
 function stopIcon(i,st){const bg=st==='delivered'?'#1E8A4F':st==='failed'?'#C23A2B':'#fff',fg=st==='delivered'||st==='failed'?'#fff':'#334C36';return window.L.divIcon({className:'',iconSize:[24,24],iconAnchor:[12,12],html:`<div class="smk" style="background:${bg};color:${fg}">${i+1}</div>`})}
-async function mountMap(){const host=$('#mapHost');if(!host)return;try{await loadLeaflet()}catch(e){host.innerHTML='<div class="empty">تعذّر تحميل الخريطة — اتأكد من الإنترنت.</div>';return}
-  const Lf=window.L;if(!LDIV){LDIV=document.createElement('div');LDIV.style.cssText='width:100%;height:100%';}
+async function mountMap(){const host=$('#mapHost');if(!host)return;try{await loadLeaflet()}catch(e){}
+  const Lf=window.L;if(!Lf||!Lf.map){const h=$('#mapHost');if(h)h.innerHTML='<div class="empty" style="padding:40px">تعذّر تحميل الخريطة — اتأكد من الإنترنت وافتح الصفحة تاني.</div>';return}if(!$('#mapHost'))return;if(!LDIV){LDIV=document.createElement('div');LDIV.style.cssText='width:100%;height:100%';}
   if(LDIV.parentNode!==host){host.innerHTML='';host.appendChild(LDIV)}
   if(!LMAP){LMAP=Lf.map(LDIV,{zoomControl:true,attributionControl:true}).setView([30.05,31.24],7);Lf.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:18,attribution:'© OpenStreetMap'}).addTo(LMAP);LLAYER=Lf.layerGroup().addTo(LMAP)}
   setTimeout(()=>LMAP.invalidateSize(),50);LLAYER.clearLayers();const bounds=[];const d=DEPOT();
@@ -1109,7 +1111,7 @@ const FSERR={'permission-denied':'invalid_argument','unauthenticated':'invalid_a
 const mapErr=p=>p.catch(e=>{throw{code:FSERR[e&&e.code]||'unavailable',message:e&&e.message}});
 function fsAdapter(fdb){
   const wrapSnap=s=>({id:s.id,exists:s.exists,data:()=>s.data(),metadata:s.metadata});
-  const wrapRef=r=>({id:r.id,path:r.path,get:()=>mapErr(r.get().then(wrapSnap)),set:d=>mapErr(r.set(d)),update:d=>mapErr(r.update(flatPaths(d))),delete:()=>mapErr(r.delete()),
+  const wrapRef=r=>({id:r.id,path:r.path,get:()=>mapErr(r.get().then(wrapSnap)),set:(d,o)=>mapErr(o?r.set(d,o):r.set(d)),update:d=>mapErr(r.update(flatPaths(d))),delete:()=>mapErr(r.delete()),
     onSnapshot:(n,e)=>r.onSnapshot(s=>n(wrapSnap(s)),er=>e&&e({code:FSERR[er.code]||'unavailable',message:er.message}))});
   const wrapQ=q=>({where:(...a)=>wrapQ(q.where(...a)),orderBy:(...a)=>wrapQ(q.orderBy(...a)),limit:n=>wrapQ(q.limit(n)),get:()=>mapErr(q.get()),
     onSnapshot:(n,e)=>q.onSnapshot({includeMetadataChanges:true},n,er=>e&&e({code:er.code==='permission-denied'?'revoked':(FSERR[er.code]||'unavailable'),message:er.message}))});
@@ -1133,9 +1135,14 @@ function vGate(){const box=(h)=>`<div class="lmain" style="min-height:100vh"><di
 async function regDevice(e){e.preventDefault();const n=$('#rgN').value.trim();if(!n)return;try{await FDB.collection('devices').doc(DEVICE.uid).set({name:n,role:$('#rgR').value,approved:false,admin:false,code:DEVICE.uid.slice(0,6).toUpperCase(),createdAt:nowISO(),agent:navigator.userAgent.slice(0,120)})}catch(er){toast('تعذّر الإرسال — تأكد من الإنترنت','err')}}
 async function loadDevices(){try{const s=await FDB.collection('devices').get();DEVS=s.docs.map(d=>Object.assign({id:d.id},d.data())).sort((a,b)=>(a.approved?1:0)-(b.approved?1:0)||(b.createdAt||'').localeCompare(a.createdAt||''))}catch(e){DEVS=[];toast('تعذّر تحميل الأجهزة — الجهاز ده لازم يكون «مدير أجهزة»','err')}render()}
 function vDevices(){if(!FDB)return '<div class="card empty">إدارة الأجهزة متاحة في الأبلكيشن فقط.</div>';if(DEVS===null){loadDevices();return '<div class="card empty">جاري التحميل…</div>'}
-  return `<div class="card"><div class="row between"><h3>الأجهزة المسموح لها</h3><button class="btn sm" onclick="DEVS=null;render()">تحديث</button></div><p class="mut sm" style="margin-top:-6px">أي موبايل جديد بيفتح التطبيق لازم يتعتمد هنا الأول. «مدير أجهزة» يقدر يعتمد الأجهزة التانية.</p>
-  <div class="tw"><table><tr><th>الاسم</th><th>الوظيفة</th><th>الكود</th><th>التاريخ</th><th>الحالة</th><th></th></tr>${DEVS.map(d=>`<tr><td class="b">${esc(d.name||'—')}${d.id===DEVICE.uid?' <span class="badge b-ok">الجهاز ده</span>':''}</td><td>${esc(ROLES[d.role]||'')}</td><td>${esc(d.code||d.id.slice(0,6).toUpperCase())}</td><td class="sm">${fmtDT(d.createdAt)}</td><td>${d.approved?`<span class="badge b-ok">معتمد</span>${d.admin?' <span class="badge b-warn">مدير أجهزة</span>':''}`:'<span class="badge b-warn">ينتظر</span>'}</td>
+  return `<div class="card"><h3>الجهاز ده</h3><div class="row" style="gap:16px;flex-wrap:wrap"><span>الكود: <b>${esc(DEVICE.code||DEVICE.uid.slice(0,6).toUpperCase())}</b></span>${APPVER?`<span>نسخة التطبيق: <b>${esc(APPVER)}</b></span>`:''}
+  <span>إشعارات والتطبيق مقفول: ${DEVICE.fcm?'<span class="badge b-ok">مفعّلة ✅</span>':isNative()?'<span class="badge b-warn">مش مفعّلة</span>':'<span class="badge">متاحة على الموبايل بس</span>'}</span>
+  ${DEVICE.fcm?`<button class="btn sm primary" onclick="pushTest()">🔔 جرّب إشعار على الجهاز ده</button>`:isNative()?`<button class="btn sm" onclick="PUSHINIT=false;pushInit();toast('جاري التفعيل… لو طلب إذن الإشعارات دوس سماح');setTimeout(()=>{DEVS=null;render()},5000)">🔔 فعّل الإشعارات</button>`:''}</div>
+  ${!DEVICE.fcm&&isNative()?'<p class="sm mut" style="margin:8px 0 0">لو فضلت مش مفعّلة: اتأكد إن إذن الإشعارات مسموح للتطبيق من إعدادات الموبايل، وإن نسخة التطبيق آخر نسخة من جوجل بلاي.</p>':''}</div>
+  <div class="card"><div class="row between"><h3>الأجهزة المسموح لها</h3><button class="btn sm" onclick="DEVS=null;render()">تحديث</button></div><p class="mut sm" style="margin-top:-6px">أي موبايل جديد بيفتح التطبيق لازم يتعتمد هنا الأول. «مدير أجهزة» يقدر يعتمد الأجهزة التانية.</p>
+  <div class="tw"><table><tr><th>الاسم</th><th>الوظيفة</th><th>الكود</th><th>التاريخ</th><th>الحالة</th><th>إشعارات</th><th></th></tr>${DEVS.map(d=>`<tr><td class="b">${esc(d.name||'—')}${d.id===DEVICE.uid?' <span class="badge b-ok">الجهاز ده</span>':''}</td><td>${esc(ROLES[d.role]||'')}</td><td>${esc(d.code||d.id.slice(0,6).toUpperCase())}</td><td class="sm">${fmtDT(d.createdAt)}</td><td>${d.approved?`<span class="badge b-ok">معتمد</span>${d.admin?' <span class="badge b-warn">مدير أجهزة</span>':''}`:'<span class="badge b-warn">ينتظر</span>'}</td><td>${d.fcm?'🔔':'—'}</td>
   <td class="row">${!d.approved?`<button class="btn sm primary" onclick="devSet('${d.id}',{approved:true})">اعتماد</button>`:d.id!==DEVICE.uid?`<button class="btn sm red" onclick="devSet('${d.id}',{approved:false,admin:false})">إيقاف</button>`:''}${d.approved&&!d.admin?`<button class="btn sm" onclick="devSet('${d.id}',{admin:true})">مدير أجهزة</button>`:''}${d.id!==DEVICE.uid?`<button class="btn sm ghost" onclick="devDel('${d.id}')">حذف</button>`:''}</td></tr>`).join('')}</table></div></div>`}
+async function pushTest(){try{await FDB.collection('pushtest').add({uid:DEVICE.uid,at:nowISO()});toast('اتبعت — اقفل التطبيق والإشعار هيوصل خلال ثواني')}catch(e){toast('تعذّر الإرسال','err')}}
 async function devSet(id,p){try{await FDB.collection('devices').doc(id).update(p);audit('تعديل جهاز','device',id,JSON.stringify(p));DEVS=null;render()}catch(e){toast('مش مسموح — الجهاز ده مش «مدير أجهزة»','err')}}
 function devDel(id){confirmBox('حذف الجهاز؟ هيحتاج تسجيل واعتماد من جديد.',async()=>{try{await FDB.collection('devices').doc(id).delete();audit('حذف جهاز','device',id,'');DEVS=null;render()}catch(e){toast('مش مسموح','err')}},'حذف')}
 /* ملفات: مشاركة على الموبايل وتنزيل على الكمبيوتر */
@@ -1144,7 +1151,7 @@ async function saveFile(fn,data){try{const blob=data instanceof Blob?data:new Bl
   if(isNative()&&plug('Filesystem')){const safe=fn.replace(/[\\/:*?"<>|]/g,'_');const r=await plug('Filesystem').writeFile({path:safe,data:await blobB64(blob),directory:'CACHE'});await plug('Share').share({title:safe,url:r.uri,dialogTitle:'حفظ أو إرسال الملف'});return}
   const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=fn;document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},2000);toast('تم التنزيل')}catch(e){if(String(e&&e.message||'').includes('cancel'))return;toast('تعذّر حفظ الملف','err')}}
 /* إشعارات جوجل — بتوصل حتى والتطبيق مقفول (محتاجة دالة السيرفر شغالة) */
-let PUSHTOK=null,PUSHINIT=false;
+let PUSHTOK=null,PUSHINIT=false,APPVER='';try{const A0=plug('App');if(A0&&A0.getInfo)A0.getInfo().then(i=>{APPVER=i.version+(i.build?' ('+i.build+')':'')}).catch(()=>{})}catch(e){}
 async function pushInit(){const PN=plug('PushNotifications');if(!isNative()||!PN||PUSHINIT)return;PUSHINIT=true;
   try{PN.addListener('registration',t=>{PUSHTOK=t&&t.value;pushSave()});PN.addListener('registrationError',()=>{});
     PN.addListener('pushNotificationActionPerformed',a=>{const d=a&&a.notification&&a.notification.data||{};if(d.tid)setTimeout(()=>openPush(d.tid),600)});
